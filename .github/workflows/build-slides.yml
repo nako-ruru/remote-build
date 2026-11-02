@@ -1,0 +1,75 @@
+name: Build Casual Slides Docker Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout source with submodules
+        uses: actions/checkout@v4
+        with:
+          repository: CasualOffice/slides
+          submodules: recursive
+
+      - name: Apply patches
+        run: |
+          # Remove __tests__ export from ui/src/index.ts
+          sed -i "/export { MockMessageService } from '.\/services\/message\/__tests__\/mock-message.service';/d" univer-revamp/packages/ui/src/index.ts
+
+          # Create patched Dockerfile
+          cp Dockerfile Dockerfile.patched
+          # Remove syntax directive
+          sed -i '1{/^# syntax=/d}' Dockerfile.patched
+          # Replace corepack with npm
+          sed -i 's/RUN corepack enable && corepack prepare pnpm@10.33.4 --activate/RUN npm install -g pnpm@10.33.4/g' Dockerfile.patched
+          # Remove cache mount
+          python3 - << 'PYEOF'
+          import re
+          p='Dockerfile.patched'
+          s=open(p).read()
+          s=re.sub(r'RUN --mount=type=cache,id=pnpm,target=/root/\.local/share/pnpm/store \\\r?\n\s*', 'RUN ', s)
+          open(p,'w').write(s)
+          PYEOF
+          # Add .npmrc copy
+          sed -i 's/COPY pnpm-lock.yaml pnpm-workspace.yaml package.json \.\//COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc .\//g' Dockerfile.patched
+          # Add NODE_OPTIONS
+          sed -i 's/RUN pnpm --filter @point\/web build/ENV NODE_OPTIONS="--max-old-space-size=4096"\nRUN pnpm --filter @point\/web build/' Dockerfile.patched
+          # Add ignore-scripts to runtime pnpm install
+          sed -i 's/RUN pnpm install --no-frozen-lockfile --prod/RUN pnpm install --no-frozen-lockfile --prod --ignore-scripts/' Dockerfile.patched
+
+          # Create .npmrc
+          echo "registry=https://registry.npmjs.org" > .npmrc
+
+          echo "Patches applied"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.patched
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/casual-slides:latest
+          build-args: |
+            HTTP_PROXY=
+            HTTPS_PROXY=
+            NO_PROXY=
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
