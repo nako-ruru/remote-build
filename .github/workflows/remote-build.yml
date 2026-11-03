@@ -1,0 +1,127 @@
+name: Remote Build (white-pick runner)
+
+# Use GitHub-hosted runners as a remote build machine.
+# Trigger locally with: gh workflow run remote-build.yml -R nako-ruru/slides-build -f ...
+# Then download result: gh run download <run-id> -R nako-ruru/slides-build
+#
+# SECURITY: slides-build is PUBLIC. Anything you build here (logs, artifacts)
+# is publicly visible. Do NOT build private/secret code with this workflow
+# unless you make the repo private first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "GitHub repo to build (owner/repo). Empty => tunnel mode (pull from your local machine)."
+        required: false
+        default: ""
+      ref:
+        description: "Git ref for source_repo (branch/tag/SHA)"
+        required: false
+        default: "main"
+      build_command:
+        description: "Command to run inside the project directory"
+        required: false
+        default: "cargo build --release"
+      artifact_path:
+        description: "Artifact glob to upload (relative to project dir)"
+        required: false
+        default: "target/release/*"
+      toolchain:
+        description: "Toolchain to install: rust | go | cpp | node | none"
+        required: false
+        default: "rust"
+      # --- tunnel mode (pull code from your local machine) ---
+      local_host:
+        description: "Tailscale hostname/IP of your local machine (tunnel mode only)"
+        required: false
+        default: ""
+      local_path:
+        description: "Absolute path on your local machine to pull (tunnel mode only)"
+        required: false
+        default: ""
+      pull_method:
+        description: "How to pull in tunnel mode: rsync | scp"
+        required: false
+        default: "rsync"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Tailscale connect (tunnel mode)
+        if: ${{ inputs.local_host != '' }}
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Setup SSH key (tunnel mode)
+        if: ${{ inputs.local_host != '' }}
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.LOCAL_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ inputs.local_host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Checkout source repo
+        if: ${{ inputs.source_repo != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repo }}
+          ref: ${{ inputs.ref || 'main' }}
+
+      - name: Pull code from local machine (tunnel mode)
+        if: ${{ inputs.local_host != '' }}
+        run: |
+          set -e
+          rm -rf project && mkdir -p project
+          case "${{ inputs.pull_method }}" in
+            rsync)
+              rsync -avz --delete "${{ inputs.local_host }}:${{ inputs.local_path }}/" ./project/
+              ;;
+            scp)
+              scp -r "${{ inputs.local_host }}:${{ inputs.local_path }}"/* ./project/
+              ;;
+            *)
+              echo "Unknown pull_method: ${{ inputs.pull_method }}" >&2
+              exit 1
+              ;;
+          esac
+          echo "--- pulled tree ---"
+          ls -la ./project
+
+      - name: Setup Rust
+        if: ${{ inputs.toolchain == 'rust' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Go
+        if: ${{ inputs.toolchain == 'go' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Setup Node
+        if: ${{ inputs.toolchain == 'node' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Setup C/C++
+        if: ${{ inputs.toolchain == 'cpp' }}
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build
+
+      - name: Build
+        working-directory: ${{ inputs.source_repo != '' && '.' || 'project' }}
+        run: ${{ inputs.build_command }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.run_number }}
+          path: ${{ inputs.source_repo != '' && inputs.artifact_path || format('project/{0}', inputs.artifact_path) }}
+          retention-days: 7
+          if-no-files-found: warn
