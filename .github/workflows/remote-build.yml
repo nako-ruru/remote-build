@@ -62,7 +62,7 @@ jobs:
         run: |
           set -e
           rm -rf project && mkdir -p project
-          ssh "${{ inputs.source_host }}" "tar czf - -C '${{ inputs.source_root }}' ." | tar xzf - -C ./project
+          ssh "${{ inputs.source_host }}" "tar czf - --exclude=.git --exclude=target --exclude=node_modules -C '${{ inputs.source_root }}' ." | tar xzf - -C ./project
           echo "--- pulled tree ---"
           ls -la ./project
 
@@ -73,6 +73,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ./project/target
+            ./project/opencalc-live/target
           key: ${{ runner.os }}-cargo-${{ inputs.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-${{ inputs.target }}-
 
