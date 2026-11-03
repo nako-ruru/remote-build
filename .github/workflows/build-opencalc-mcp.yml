@@ -1,0 +1,72 @@
+name: Build OpenCalc MCP Server
+
+# Casual Office ships `casual-calc-mcp` as source only (no binary, no image),
+# so build it here. The output is a Linux amd64 binary attached to a release,
+# which means a host without Docker can just download and run it.
+#
+# Source: CasualOffice/opencalc, crate `server/casual-calc-mcp`
+# (docs/97 AGENT-01, status Done). It is file-level only: open/read/write/
+# recalculate/save against a filesystem root. It does not join a live
+# collaboration session (that is AGENT-03, still open).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "opencalc git ref (branch, tag or SHA)"
+        required: false
+        default: "main"
+      run_tests:
+        description: "Run the MCP crate's own tests before packaging"
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout OpenCalc
+        uses: actions/checkout@v4
+        with:
+          repository: CasualOffice/opencalc
+          ref: ${{ inputs.ref || 'main' }}
+
+      - name: Show toolchain
+        run: |
+          rustup show
+          cat rust-toolchain.toml
+
+      - name: Test (optional)
+        if: ${{ inputs.run_tests == 'true' }}
+        run: cargo test --locked -p casual-calc-mcp
+
+      - name: Build casual-calc-mcp
+        run: cargo build --release --locked -p casual-calc-mcp
+
+      - name: Package
+        run: |
+          mkdir -p out
+          cp target/release/casual-calc-mcp out/casual-calc-mcp
+          tar -czf out/casual-calc-mcp-linux-amd64.tar.gz -C out casual-calc-mcp
+          sha256sum out/casual-calc-mcp | tee out/SHA256SUMS.txt
+          ls -lh out/
+          ./out/casual-calc-mcp --version || true
+
+      - name: Publish to a release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mcp-${{ github.run_number }}
+          name: casual-calc-mcp (${{ inputs.ref || 'main' }})
+          body: |
+            Built from CasualOffice/opencalc ref `${{ inputs.ref || 'main' }}`.
+
+            Linux amd64, glibc-linked. Run with `--root <DIR>` (repeatable);
+            every file tool refuses paths outside a root.
+          files: |
+            out/casual-calc-mcp
+            out/casual-calc-mcp-linux-amd64.tar.gz
+            out/SHA256SUMS.txt
