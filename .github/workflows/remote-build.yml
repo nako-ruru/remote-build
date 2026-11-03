@@ -1,49 +1,39 @@
 name: Remote Build (white-pick runner)
 
-# Use GitHub-hosted runners as a remote build machine.
-# Trigger locally with: gh workflow run remote-build.yml -R nako-ruru/slides-build -f ...
-# Then download result: gh run download <run-id> -R nako-ruru/slides-build
-#
-# SECURITY: slides-build is PUBLIC. Anything you build here (logs, artifacts)
-# is publicly visible. Do NOT build private/secret code with this workflow
-# unless you make the repo private first.
+# Only mode: pull code from your machine via Tailscale + rsync,
+# build on GitHub runner, push artifact back to your machine.
+# Trigger:
+#   gh workflow run remote-build.yml -R nako-ruru/remote-build \
+#     -f source_host=my-pc -f source_root=D:/projects/myrust \
+#     -f return_path=D:/projects/myrust/out
 
 on:
   workflow_dispatch:
     inputs:
-      source_repo:
-        description: "GitHub repo to build (owner/repo). Empty => tunnel mode (pull from your local machine)."
-        required: false
+      source_host:
+        description: "Tailscale hostname/IP of your machine (pull source + receive artifact)"
+        required: true
         default: ""
-      ref:
-        description: "Git ref for source_repo (branch/tag/SHA)"
-        required: false
-        default: "main"
+      source_root:
+        description: "Absolute path on your machine to the project"
+        required: true
+        default: ""
       build_command:
         description: "Command to run inside the project directory"
         required: false
         default: "cargo build --release"
       artifact_path:
-        description: "Artifact glob to upload (relative to project dir)"
+        description: "Artifact glob to copy back (relative to project dir)"
         required: false
         default: "target/release/*"
       toolchain:
-        description: "Toolchain to install: rust | go | cpp | node | none"
+        description: "Toolchain: rust | go | cpp | node | none"
         required: false
         default: "rust"
-      # --- tunnel mode (pull code from your local machine) ---
-      local_host:
-        description: "Tailscale hostname/IP of your local machine (tunnel mode only)"
-        required: false
+      return_path:
+        description: "Local directory on your machine to receive the built artifact"
+        required: true
         default: ""
-      local_path:
-        description: "Absolute path on your local machine to pull (tunnel mode only)"
-        required: false
-        default: ""
-      pull_method:
-        description: "How to pull in tunnel mode: rsync | scp"
-        required: false
-        default: "rsync"
 
 jobs:
   build:
@@ -52,45 +42,24 @@ jobs:
       contents: read
 
     steps:
-      - name: Tailscale connect (tunnel mode)
-        if: ${{ inputs.local_host != '' }}
+      - name: Tailscale connect
         uses: tailscale/github-action@v2
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-      - name: Setup SSH key (tunnel mode)
-        if: ${{ inputs.local_host != '' }}
+      - name: Setup SSH key
         run: |
           set -e
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.LOCAL_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "${{ inputs.local_host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -H "${{ inputs.source_host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Checkout source repo
-        if: ${{ inputs.source_repo != '' }}
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.source_repo }}
-          ref: ${{ inputs.ref || 'main' }}
-
-      - name: Pull code from local machine (tunnel mode)
-        if: ${{ inputs.local_host != '' }}
+      - name: Pull code from local machine
         run: |
           set -e
           rm -rf project && mkdir -p project
-          case "${{ inputs.pull_method }}" in
-            rsync)
-              rsync -avz --delete "${{ inputs.local_host }}:${{ inputs.local_path }}/" ./project/
-              ;;
-            scp)
-              scp -r "${{ inputs.local_host }}:${{ inputs.local_path }}"/* ./project/
-              ;;
-            *)
-              echo "Unknown pull_method: ${{ inputs.pull_method }}" >&2
-              exit 1
-              ;;
-          esac
+          rsync -avz --delete "${{ inputs.source_host }}:${{ inputs.source_root }}/" ./project/
           echo "--- pulled tree ---"
           ls -la ./project
 
@@ -115,13 +84,29 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build
 
       - name: Build
-        working-directory: ${{ inputs.source_repo != '' && '.' || 'project' }}
+        working-directory: ./project
         run: ${{ inputs.build_command }}
 
-      - name: Upload artifact
+      - name: Return artifact to local machine
+        run: |
+          set -e
+          cd ./project
+          shopt -s nullglob
+          files=( ${{ inputs.artifact_path }} )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No files matched artifact_path: ${{ inputs.artifact_path }}" >&2
+            exit 1
+          fi
+          ssh "${{ inputs.source_host }}" "mkdir -p '${{ inputs.return_path }}'"
+          for f in "${files[@]}"; do
+            scp -r "$f" "${{ inputs.source_host }}:${{ inputs.return_path }}/"
+          done
+          echo "Returned to ${{ inputs.source_host }}:${{ inputs.return_path }}"
+
+      - name: Upload artifact (backup)
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ github.run_number }}
-          path: ${{ inputs.source_repo != '' && inputs.artifact_path || format('project/{0}', inputs.artifact_path) }}
+          path: ./project/${{ inputs.artifact_path }}
           retention-days: 7
           if-no-files-found: warn
