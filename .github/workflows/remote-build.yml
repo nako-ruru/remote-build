@@ -1,17 +1,16 @@
 name: Remote Build (white-pick runner)
 
-# Only mode: pull code from your machine via Tailscale + rsync,
+# Pull code from your machine via Tailscale + compressed ssh tar pipe,
 # build on GitHub runner, push artifact back to your machine.
-# Trigger:
-#   gh workflow run remote-build.yml -R nako-ruru/remote-build \
-#     -f source_host=my-pc -f source_root=D:/projects/myrust \
-#     -f return_path=D:/projects/myrust/out
+# Runs on ubuntu-latest => produces Linux binaries by default.
+# Cross-compile: set `target` (e.g. x86_64-pc-windows-gnu needs mingw;
+# macOS targets need osxcross and are not supported out of the box).
 
 on:
   workflow_dispatch:
     inputs:
       source_host:
-        description: "Tailscale hostname/IP of your machine (pull source + receive artifact)"
+        description: "Tailscale hostname/IP of your machine"
         required: true
         default: ""
       source_root:
@@ -22,10 +21,14 @@ on:
         description: "Command to run inside the project directory"
         required: false
         default: "cargo build --release"
-      artifact_path:
-        description: "Artifact glob to copy back (relative to project dir)"
+      target:
+        description: "Rust target triple (default linux). Cross-compile needs extra toolchain."
         required: false
-        default: "target/release/*"
+        default: "x86_64-unknown-linux-gnu"
+      artifact_path:
+        description: "Artifact glob to copy back (relative to project dir). Update if you change target."
+        required: false
+        default: "target/x86_64-unknown-linux-gnu/release/*"
       toolchain:
         description: "Toolchain: rust | go | cpp | node | none"
         required: false
@@ -55,17 +58,29 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "${{ inputs.source_host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Pull code from local machine
+      - name: Pull code (compressed ssh tar pipe)
         run: |
           set -e
           rm -rf project && mkdir -p project
-          rsync -avz --delete "${{ inputs.source_host }}:${{ inputs.source_root }}/" ./project/
+          ssh "${{ inputs.source_host }}" "tar czf - -C '${{ inputs.source_root }}' ." | tar xzf - -C ./project
           echo "--- pulled tree ---"
           ls -la ./project
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ./project/target
+          key: ${{ runner.os }}-cargo-${{ inputs.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-${{ inputs.target }}-
 
       - name: Setup Rust
         if: ${{ inputs.toolchain == 'rust' }}
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.target }}
 
       - name: Setup Go
         if: ${{ inputs.toolchain == 'go' }}
@@ -85,7 +100,17 @@ jobs:
 
       - name: Build
         working-directory: ./project
-        run: ${{ inputs.build_command }}
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+          CARGO_TARGET_DIR: target
+          CARGO_BUILD_TARGET: ${{ inputs.target }}
+        run: |
+          set -e
+          # install mold if missing
+          if ! command -v mold >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y mold
+          fi
+          ${{ inputs.build_command }}
 
       - name: Return artifact to local machine
         run: |
@@ -94,7 +119,7 @@ jobs:
           shopt -s nullglob
           files=( ${{ inputs.artifact_path }} )
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No files matched artifact_path: ${{ inputs.artifact_path }}" >&2
+            echo "No files matched: ${{ inputs.artifact_path }}" >&2
             exit 1
           fi
           ssh "${{ inputs.source_host }}" "mkdir -p '${{ inputs.return_path }}'"
