@@ -35,6 +35,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
+      - name: Check key shape
+        env:
+          K: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          echo "length=${#K}"
+          case "$K" in
+            tskey-auth-*) echo "prefix=ok" ;;
+            *) echo "prefix=BAD" ;;
+          esac
+          if printf '%s' "$K" | grep -q '[[:space:]]'; then
+            echo "whitespace=YES"
+          else
+            echo "whitespace=no"
+          fi
+
       - name: Tailscale connect
         uses: tailscale/github-action@v2
         with:
