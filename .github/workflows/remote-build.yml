@@ -102,15 +102,22 @@ jobs:
       - name: Build
         working-directory: ./project
         env:
-          RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
           CARGO_TARGET_DIR: target
           CARGO_BUILD_TARGET: ${{ inputs.target }}
         run: |
           set -e
-          # install mold if missing
+          # install mold if missing, and use it on Linux targets only
           if ! command -v mold >/dev/null 2>&1; then
             sudo apt-get update && sudo apt-get install -y mold
           fi
+          case "${{ inputs.target }}" in
+            *linux*)
+              export RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+              ;;
+            *windows*)
+              sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+              ;;
+          esac
           ${{ inputs.build_command }}
 
       - name: Return artifact to local machine

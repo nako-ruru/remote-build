@@ -1,0 +1,65 @@
+name: Serve build workspace
+
+# Starts an HTTP build service on the runner, reachable only over Tailscale.
+# The caller uploads a source zip, asks for a build, polls status, then
+# downloads the artifact file. No GitHub artifacts are produced.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: "Short id; the runner joins as rb-<id>"
+        required: true
+      token:
+        description: "Access token for the HTTP API"
+        required: true
+      port:
+        description: "HTTP port"
+        required: false
+        default: "8787"
+      build_command:
+        description: "Default build command"
+        required: false
+        default: "cargo build --release"
+      timeout:
+        description: "Per-build timeout in seconds"
+        required: false
+        default: "3600"
+      max_lifetime:
+        description: "Server lifetime in seconds"
+        required: false
+        default: "7200"
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Tailscale connect
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          args: --hostname=rb-${{ inputs.build_id }}
+
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+          rustup target add x86_64-pc-windows-gnu
+
+      - name: Serve
+        shell: bash
+        run: |
+          IP="$(tailscale ip -4 | head -1)"
+          echo "tailnet address: $IP"
+          python3 remote_build_ws.py \
+            --host "$IP" \
+            --port "${{ inputs.port }}" \
+            --token "${{ inputs.token }}" \
+            --root "${{ github.workspace }}/ws" \
+            --build-dir src \
+            --build-command "${{ inputs.build_command }}" \
+            --timeout "${{ inputs.timeout }}" \
+            --max-lifetime "${{ inputs.max_lifetime }}"
