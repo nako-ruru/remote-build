@@ -13,6 +13,10 @@ on:
       token:
         description: "Access token for the HTTP API"
         required: true
+      plat:
+        description: "Runner image: ubuntu-latest, windows-latest, macos-latest"
+        required: false
+        default: "ubuntu-latest"
       port:
         description: "HTTP port"
         required: false
@@ -32,7 +36,7 @@ on:
 
 jobs:
   serve:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.plat }}
     timeout-minutes: 180
     steps:
       - name: Tailscale connect
@@ -43,7 +47,10 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Toolchain
+      # Only the Linux image needs extra packages; Windows and macOS ship a
+      # Rust toolchain that builds natively.
+      - name: Toolchain (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-mingw-w64-x86-64
@@ -54,7 +61,9 @@ jobs:
         run: |
           IP="$(tailscale ip -4 | head -1)"
           echo "tailnet address: $IP"
-          python3 remote_build_ws.py \
+          PY=python3
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=python; fi
+          "$PY" remote_build_ws.py \
             --host "$IP" \
             --port "${{ inputs.port }}" \
             --token "${{ inputs.token }}" \
