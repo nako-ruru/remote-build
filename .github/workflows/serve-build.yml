@@ -47,6 +47,25 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # Compile cache across ephemeral runners: sccache stores rustc outputs in
+      # the GitHub Actions cache, so a second build of the same crates is fast
+      # even though the runner's disk starts empty.
+      - name: Rust compile cache (sccache)
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      # Cargo registry/git cache: avoids re-downloading the same crates. The
+      # source is uploaded after this step, so the key cannot hash Cargo.lock;
+      # a run-id key with a stable restore prefix keeps the newest cache.
+      - name: Cargo registry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
       # Only the Linux image needs extra packages; Windows and macOS ship a
       # Rust toolchain that builds natively.
       - name: Toolchain (Linux)
@@ -58,6 +77,9 @@ jobs:
 
       - name: Serve
         shell: bash
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
         run: |
           IP="$(tailscale ip -4 | head -1)"
           echo "tailnet address: $IP"
