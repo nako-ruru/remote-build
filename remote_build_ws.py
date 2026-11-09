@@ -47,7 +47,7 @@ class State:
         with self.lock:
             self.phase = phase
             if message:
-                self.message = message
+                self.message = "[%s] %s" % (time.strftime("%H:%M:%S"), message)
 
 
 STATE = None
@@ -97,6 +97,7 @@ def build_worker(state, command, zip_name, dir_name):
             state.dir = os.path.relpath(workdir, state.root).replace(os.sep, "/")
         state.set("building", "cwd=%s cmd=%s" % (state.dir, command))
         with open(state.log_path, "wb") as log:
+            log.write(("[%s] build started: %s\n" % (time.strftime("%H:%M:%S"), command)).encode("utf-8"))
             proc = subprocess.run(
                 command,
                 shell=True,
@@ -119,7 +120,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "remote-build/1"
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+        sys.stderr.write("[%s] %s - %s\n" % (time.strftime("%H:%M:%S"), self.address_string(), fmt % args))
 
     def _auth(self):
         token = STATE.args.token
@@ -265,7 +266,7 @@ def watcher(state):
     deadline = time.time() + state.args.max_lifetime
     while time.time() < deadline:
         time.sleep(2)
-    print("max lifetime reached; exiting", flush=True)
+    print("[%s] max lifetime reached; exiting" % time.strftime("%H:%M:%S"), flush=True)
     os._exit(0)
 
 
@@ -290,8 +291,8 @@ def main():
     STATE.server = ThreadingHTTPServer((args.host, args.port), Handler)
     threading.Thread(target=watcher, args=(STATE,), daemon=True).start()
 
-    print("workspace %s  dir %s  command %s" % (STATE.root, args.build_dir, args.build_command), flush=True)
-    print("listening on %s:%d" % (args.host, args.port), flush=True)
+    print("[%s] workspace %s  dir %s  command %s" % (time.strftime("%H:%M:%S"), STATE.root, args.build_dir, args.build_command), flush=True)
+    print("[%s] listening on %s:%d" % (time.strftime("%H:%M:%S"), args.host, args.port), flush=True)
     try:
         STATE.server.serve_forever()
     except KeyboardInterrupt:
